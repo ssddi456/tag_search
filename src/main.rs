@@ -80,13 +80,18 @@ async fn search_file_with_tag(
     thread_id: usize,
 ) {
     println!("start {}", thread_id);
+    let mut unwrap_tag_line: Vec<u8> = Vec::new();
+    let mut current_piece_info: Vec<Value> = Vec::new();
+
     while let Some(file_info_str) = {
         let mut queue = files_queue.lock().unwrap();
         queue.pop_front()
     } {
+
+        current_piece_info.clear();
+
         let file_info: Value = serde_json::from_slice(&file_info_str).unwrap();
-        let mut current_piece_info: Vec<Value> = Vec::new();
-        let tag_file_path = file_info["tag_file"].as_str().unwrap();
+        let tag_file_path: &str = file_info["tag_file"].as_str().unwrap();
         let tag_file = File::open(tag_file_path).await.unwrap();
         let reader = &mut BufReader::with_capacity(64 * 1024 * 1024, tag_file);
         println!("start {}", tag_file_path,);
@@ -95,7 +100,8 @@ async fn search_file_with_tag(
         // read 100 lines at a time
         // wrap reader.lines() in a chunk of 100 lines
         while true {
-            let unwrap_tag_line = read_next_line(reader).await;
+            unwrap_tag_line.clear();
+            reader.read_until(b'\n', &mut unwrap_tag_line).await.unwrap();
 
             if unwrap_tag_line.is_empty() {
                 break;
@@ -146,13 +152,14 @@ async fn search_file_with_tag(
         let mut current_start = offset[0].as_u64().unwrap() as u64;
 
         while true {
-            let post_line = read_next_line(post_reader).await;
+            unwrap_tag_line.clear();
+            post_reader.read_until(b'\n', &mut unwrap_tag_line).await.unwrap();
 
-            if post_line.is_empty() {
+            if unwrap_tag_line.is_empty() {
                 break;
             }
 
-            let post_line_size = post_line.len() as u64;
+            let post_line_size = unwrap_tag_line.len() as u64;
             if current_start < start {
                 // wtf
                 break;
@@ -163,7 +170,7 @@ async fn search_file_with_tag(
                 let mut queue: std::sync::MutexGuard<VecDeque<Vec<u8>>> =
                     res_queue.lock().unwrap();
                 if post_line_size != 0 {
-                    queue.push_back(post_line.to_vec());
+                    queue.push_back(unwrap_tag_line.to_vec());
                 }
 
                 start += post_line_size;
@@ -201,8 +208,10 @@ async fn map_reduce_search_tag(
     let list_file = File::open(list_file_name).await.unwrap();
     let mut reader = BufReader::new(list_file);
 
+    
     while true {
         let mut line: Vec<u8> = Vec::new();
+        line.clear();
         reader.read_until(b'\n', &mut line).await.unwrap();
         if line.is_empty() {
             break;

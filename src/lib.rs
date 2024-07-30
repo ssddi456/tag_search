@@ -155,7 +155,7 @@ pub fn chunked_read_u8<R: io::Read>(
 pub async fn read_next_line<R: tokio::io::AsyncRead + std::marker::Unpin> (
     r: &mut AsyncBufReader<R>,
 ) -> Vec<u8> {
-    let mut line = Vec::new();
+    let mut line: Vec<u8> = Vec::new();
     
     r.read_until(b'\n', &mut line).await.unwrap();
 
