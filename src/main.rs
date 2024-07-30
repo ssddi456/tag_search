@@ -83,6 +83,13 @@ async fn search_file_with_tag(
     let mut unwrap_tag_line: Vec<u8> = Vec::new();
     let mut current_piece_info: Vec<Value> = Vec::new();
 
+    let mut line_start: usize = 0;
+    let mut line_end: usize = 0;
+    let block_size: usize = 64 * 1024 * 1024;
+    let mut available: Vec<u8> = Vec::with_capacity(block_size);
+    let mut total_read: usize = 0;
+    let mut line_count: usize = 0;
+
     while let Some(file_info_str) = {
         let mut queue = files_queue.lock().unwrap();
         queue.pop_front()
@@ -92,21 +99,63 @@ async fn search_file_with_tag(
 
         let file_info: Value = serde_json::from_slice(&file_info_str).unwrap();
         let tag_file_path: &str = file_info["tag_file"].as_str().unwrap();
-        let tag_file = File::open(tag_file_path).await.unwrap();
-        let reader = &mut BufReader::with_capacity(64 * 1024 * 1024, tag_file);
+        let mut tag_file = File::open(tag_file_path).await.unwrap();
+
         println!("start {}", tag_file_path,);
         let starttime = std::time::Instant::now();
-
+        // first read
+        let read_size = tag_file.read_buf(&mut available).await.unwrap();
+        println!("read_size: {:?}", read_size);
+        total_read += read_size;
         // read 100 lines at a time
         // wrap reader.lines() in a chunk of 100 lines
         while true {
-            unwrap_tag_line.clear();
-            reader.read_until(b'\n', &mut unwrap_tag_line).await.unwrap();
 
-            if unwrap_tag_line.is_empty() {
-                break;
+            // find the start of the next piece by delimiter
+            for i in line_start..available.len() {
+                if available[i] == b'\n' {
+                    line_end = i;
+                    break;
+                }
             }
+            // println!("line_start: {:?} line_end: {:?}", line_start, line_end);
 
+            if line_end < line_start {
+                // strip available to line_start
+                available.drain(0..line_start);
+                let current_aviable_content = block_size - line_start;
+                line_start = 0;
+                line_end = 0;
+                // read more
+                let read_size = tag_file.read_buf(&mut available).await.unwrap();
+                total_read += read_size;
+                // println!("read_size: {:?} total_read: {:?}", read_size, total_read);
+                if read_size == 0 {
+                    break;
+                }
+
+                let new_available_content = current_aviable_content + read_size;
+                for i in 0..new_available_content {
+                    if available[i] == b'\n' {
+                        line_end = i;
+                        break;
+                    }
+                }
+
+                if line_end == 0 {
+                    if new_available_content == 0 {
+                        break;
+                    }
+                    // no line end found
+                    line_end = new_available_content;
+                }
+            }
+            // line_count += 1;
+            // if line_count % 10000 == 0 {
+            //     println!("line_count: {:?}", line_count);
+            // }
+            unwrap_tag_line.clear();
+            unwrap_tag_line.extend_from_slice(&available[line_start..line_end]);
             if match_tags(tag, &unwrap_tag_line) {
                 let line_info = match serde_json::from_slice(&unwrap_tag_line) {
                     // msg.as_str()
@@ -128,7 +177,9 @@ async fn search_file_with_tag(
                     current_piece_info.push(line_info);
                 }
             }
-        
+
+            // remove the first line
+            line_start = line_end + 1;
         }
 
         let current_piece_info_len: usize = current_piece_info.len();
