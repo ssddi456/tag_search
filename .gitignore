@@ -1,0 +1,12 @@
+*.json
+*.jpg
+*.png
+*.gif
+*.webp
+*.avif
+*.tar
+*.tar.gz
+*.tar.xz
+target/*
+
+log

@@ -1,0 +1,13 @@
+[package]
+name = "search"
+version = "0.1.0"
+authors = ["mark"]
+edition = "2021"
+
+[dependencies]
+serde_json = "1.0.120"
+normpath = "1.2.0"
+path-clean = "1.0.1"
+core_affinity = "0.8.1"
+linereader = "0.4.0"
+tokio = { version = "1.39.2", features = ["full"] }
