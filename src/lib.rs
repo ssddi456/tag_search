@@ -1,6 +1,7 @@
 extern crate linereader;
 
 use std::io::{self, BufRead, BufReader};
+use serde_json::value;
 use tokio::io::{AsyncBufReadExt, BufReader as AsyncBufReader};
 use linereader::LineReader;
 
@@ -29,6 +30,11 @@ pub fn get_line_id(line: &String) -> String {
     line[PREFIX_LEN..first_comma].to_string()
 }
 
+struct SearchPosition {
+    start: usize,
+    value: [u8; 3],
+}
+
 pub fn match_tag(tag: String, tag_strings: String) -> bool {
     let padding = format!(" {} ", tag);
     let padded_tag_strings = format!(" {} ", tag_strings);
@@ -40,6 +46,9 @@ pub fn match_tags(tags: &[Vec<u8>], tag_strings: &[u8]) -> bool {
     if tag_string_len < 3 {
         return false;
     }
+    let mut space_positions: Vec<SearchPosition> = Vec::new();
+    let mut last_visited_index = 2;
+
     for tag in tags {
         let first_byte = tag[0];
         let second_byte = tag[1];
@@ -47,8 +56,39 @@ pub fn match_tags(tags: &[Vec<u8>], tag_strings: &[u8]) -> bool {
 
         let mut found_tag = false;
         let tag_len = tag.len();
-        for i in 2..(tag_string_len - tag_len + 3) {
-            // println!("{} {:?} {:?}", i,
+        let mut search_start = last_visited_index;
+
+        for postion in space_positions.iter() {
+            if postion.value == [first_byte, second_byte, third_byte] {
+                search_start = postion.start;
+                // println!("search_start: {} {} {}",
+                //     search_start,
+                //     std::str::from_utf8(&postion.value).unwrap(),
+                //     std::str::from_utf8(&[first_byte, second_byte, third_byte]).unwrap()
+                // );
+                break;
+            }
+        }
+
+        // println!("search_start: {} {}", search_start, (tag_string_len - tag_len + 3));
+
+        for i in search_start..(tag_string_len - tag_len + 3) {
+
+            if tag_strings[i] == b' ' && i + 2 < tag_string_len {
+                if !(space_positions.iter().any(|x| x.start == i + 2)) {
+                    // println!("{} tag_strings[i] {:?}", i, std::str::from_utf8(&tag_strings[(i)..(i + 2)]));
+                    space_positions.push(SearchPosition {
+                        start: i,
+                        value: [
+                            tag_strings[i],
+                            tag_strings[i + 1],
+                            tag_strings[i + 2],
+                        ],
+                    });
+                    last_visited_index = i;
+                }
+            }
+            // println!("check {} {:?} {:?}", i,
             //     std::str::from_utf8(&[
             //         first_byte,
             //         second_byte,
@@ -61,7 +101,7 @@ pub fn match_tags(tags: &[Vec<u8>], tag_strings: &[u8]) -> bool {
                 && tag_strings[i] == third_byte
             ) {
                 if tag_len == 3 {
-                    // println!("{} {} {}", i, tag_strings[i], tag[0]);
+                    println!("{} {} {}", i, tag_strings[i], tag[0]);
                     found_tag = true;
                     break;
                 }
