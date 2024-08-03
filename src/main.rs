@@ -2,20 +2,22 @@ mod lib;
 
 extern crate core_affinity;
 extern crate linereader;
+extern crate memmap;
 extern crate path_clean;
 extern crate serde_json;
-extern crate tokio;
 
-use lib::{read_next_line, read_next_nth_lines};
-use lib::{match_tags, padding_tag};
+use lib::{padding_tag, search_with_searchers};
+use memmap::Mmap;
 use path_clean::clean;
 use serde_json::Value;
 use std::collections::VecDeque;
+use std::fs::File as SyncFile;
+use std::io::{BufRead, BufReader, Read};
 use std::sync::{Arc, Mutex};
-use tokio::fs::File;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::AsyncReadExt;
-use tokio::io::BufReader;
+use std::thread;
+
+use memmem::TwoWaySearcher;
+use memchr::memchr;
 
 // This is a comment, and is ignored by the compiler.
 // You can test this code by clicking the "Run" button over there ->
@@ -26,13 +28,11 @@ use tokio::io::BufReader;
 // You can always return to the original code by clicking the "Reset" button ->
 
 // This is the main function.
-#[tokio::main]
-async fn main() -> Result<(), std::io::Error> {
+fn main() -> Result<(), std::io::Error> {
     // Statements here are executed when the compiled binary is called.
 
     // Print text to the console.
-    println!("Hello World!");
-    // print current directory
+   // print current directory
     let current_dir = std::env::current_dir().unwrap();
     println!("current dir: {:?}", current_dir);
     // print all posts file path and if it exists
@@ -47,10 +47,10 @@ async fn main() -> Result<(), std::io::Error> {
     println!("query path: {:?}", clean(&query));
     println!("query exists: {}", query.exists());
 
-    let mut tag_file = File::open(query).await.expect("tag file should exists");
+    let mut tag_file = SyncFile::open(query).unwrap();
     let mut content = String::new();
     let tag_file_content = {
-        tag_file.read_to_string(&mut content).await.unwrap();
+        tag_file.read_to_string(&mut content);
         std::str::from_utf8(&content.as_bytes()).unwrap()
     };
 
@@ -62,102 +62,65 @@ async fn main() -> Result<(), std::io::Error> {
 
     // performance log
     let now = std::time::Instant::now();
-    let foundfile = map_reduce_search_tag(&tag_query, 10, None, None).await;
-    println!("time: {:?}", now.elapsed());
-
+    let foundfile = map_reduce_search_tag(&tag_query, 10, None, None);
+    let time_elapsed = now.elapsed();
+    
     println!("found file: {:?}", foundfile.len());
-    for file in foundfile.iter() {
-        println!("file: {}", file);
-    }
+    // for file in foundfile.iter() {
+    //     println!("file: {}", file);
+    // }
+    println!("time: {:?}", time_elapsed);
 
     Ok(())
 }
 
-async fn search_file_with_tag(
+fn search_file_with_tag(
     tag: &[Vec<u8>],
     files_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
     res_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
     thread_id: usize,
 ) {
     println!("start {}", thread_id);
-    let mut unwrap_tag_line: Vec<u8> = Vec::new();
-    let mut current_piece_info: Vec<Value> = Vec::new();
 
     let mut line_start: usize = 0;
     let mut line_end: usize = 0;
-    let block_size: usize = 64 * 1024 * 1024;
-    let mut available: Vec<u8> = Vec::with_capacity(block_size);
-    let mut total_read: usize = 0;
-    let mut line_count: usize = 0;
 
+    let searchers = tag.iter().map(|tag| TwoWaySearcher::new(tag)).collect();
+    
     while let Some(file_info_str) = {
         let mut queue = files_queue.lock().unwrap();
         queue.pop_front()
     } {
-
-        current_piece_info.clear();
-
         let file_info: Value = serde_json::from_slice(&file_info_str).unwrap();
         let tag_file_path: &str = file_info["tag_file"].as_str().unwrap();
-        let mut tag_file = File::open(tag_file_path).await.unwrap();
+        let mut tag_file = SyncFile::open(tag_file_path).unwrap();
 
         println!("start {}", tag_file_path,);
         let starttime = std::time::Instant::now();
+        let mut current_piece_info: Vec<usize> = Vec::new();
+
         // first read
-        let read_size = tag_file.read_buf(&mut available).await.unwrap();
-        println!("read_size: {:?}", read_size);
-        total_read += read_size;
+        let mmap = unsafe { Mmap::map(&tag_file).unwrap() };
+        let available: &[u8] = &mmap;
+
+        line_start = 0;
+        line_end = 0;
+        let file_size = available.len();
+
         // read 100 lines at a time
         // wrap reader.lines() in a chunk of 100 lines
+        
         while true {
-
             // find the start of the next piece by delimiter
-            for i in line_start..available.len() {
-                if available[i] == b'\n' {
-                    line_end = i;
-                    break;
-                }
+            match memchr(b'\n', &available[line_start..]) {
+                Some(v) => line_end = v + line_start,
+                None => line_end = file_size,
             }
-            // println!("line_start: {:?} line_end: {:?}", line_start, line_end);
 
-            if line_end < line_start {
-                // strip available to line_start
-                available.drain(0..line_start);
-                let current_aviable_content = block_size - line_start;
-                line_start = 0;
-                line_end = 0;
-                // read more
-                let read_size = tag_file.read_buf(&mut available).await.unwrap();
-                total_read += read_size;
-                // println!("read_size: {:?} total_read: {:?}", read_size, total_read);
-                if read_size == 0 {
-                    break;
-                }
+            // if tag_searcher.search_in( &available[line_start..line_end]).is_some() {
+            if search_with_searchers( &searchers,&available[line_start..line_end]) {
 
-                let new_available_content = current_aviable_content + read_size;
-                for i in 0..new_available_content {
-                    if available[i] == b'\n' {
-                        line_end = i;
-                        break;
-                    }
-                }
-
-                if line_end == 0 {
-                    if new_available_content == 0 {
-                        break;
-                    }
-                    // no line end found
-                    line_end = new_available_content;
-                }
-            }
-            // line_count += 1;
-            // if line_count % 10000 == 0 {
-            //     println!("line_count: {:?}", line_count);
-            // }
-            unwrap_tag_line.clear();
-            unwrap_tag_line.extend_from_slice(&available[line_start..line_end]);
-            if match_tags(tag, &unwrap_tag_line) {
-                let line_info = match serde_json::from_slice(&unwrap_tag_line) {
+                let line_info = match serde_json::from_slice(&available[line_start..line_end]) {
                     // msg.as_str()
                     Ok(v) => v,
                     Err(e) => {
@@ -171,103 +134,78 @@ async fn search_file_with_tag(
                     }
                 };
                 if line_info.is_object() && line_info["id"].as_f64().unwrap() == -1.0 {
-                    let line_content = std::str::from_utf8(&unwrap_tag_line).unwrap();
+                    let line_content = std::str::from_utf8(&available[line_start..line_end]).unwrap();
                     println!("error: {:?}", line_content);
                 } else {
-                    current_piece_info.push(line_info);
+                    let offset = line_info["offset"].as_array().unwrap();
+                    let start = offset[0].as_u64().unwrap() as usize;
+                    current_piece_info.push(start);
                 }
             }
 
             // remove the first line
             line_start = line_end + 1;
+            if line_end == file_size || line_start == file_size {
+                break;
+            }
+
         }
 
+        println!("end {} {:?}", tag_file_path, starttime.elapsed());
         let current_piece_info_len: usize = current_piece_info.len();
-        if current_piece_info.is_empty() {
-            println!("end {}", tag_file_path,);
-            println!("elapsed: {:?}", starttime.elapsed());
+        if current_piece_info_len == 0 {
             continue;
         }
 
         println!("current_piece_info: {:?}", current_piece_info_len);
 
         let post_file_path = file_info["file"].as_str().unwrap();
-        let post_file = File::open(post_file_path).await.unwrap();
-        let post_reader = &mut BufReader::with_capacity(64 * 1024 * 1024, post_file);
+        let post_file = SyncFile::open(post_file_path).unwrap();
+        // first read
+        let mmap = unsafe { Mmap::map(&post_file).unwrap() };
+        let available: &[u8] = &mmap;
 
-        let mut start = 0;
+        for i in 0..current_piece_info_len {
+            let current_piece_info_item = &current_piece_info[i];
+            let start = current_piece_info_item;
 
-        let mut line_info_index: usize = 0;
-        let mut current_piece_info_item = &current_piece_info[line_info_index];
-        let mut offset = current_piece_info_item["offset"].as_array().unwrap();
-        let mut current_start = offset[0].as_u64().unwrap() as u64;
-
-        while true {
-            unwrap_tag_line.clear();
-            post_reader.read_until(b'\n', &mut unwrap_tag_line).await.unwrap();
-
-            if unwrap_tag_line.is_empty() {
-                break;
+            match memchr(b'\n', &available[*start..]) {
+                Some(v) => line_end = v + start,
+                None => line_end = available.len(),
             }
+            let line_content = &available[*start..line_end];
+            let mut queue: std::sync::MutexGuard<VecDeque<Vec<u8>>> = res_queue.lock().unwrap();
+            queue.push_back(line_content.to_vec());
 
-            let post_line_size = unwrap_tag_line.len() as u64;
-            if current_start < start {
-                // wtf
-                break;
-            }
-
-            if start == current_start {
-                // character length of the line
-                let mut queue: std::sync::MutexGuard<VecDeque<Vec<u8>>> =
-                    res_queue.lock().unwrap();
-                if post_line_size != 0 {
-                    queue.push_back(unwrap_tag_line.to_vec());
-                }
-
-                start += post_line_size;
-
-                line_info_index += 1;
-                if line_info_index >= current_piece_info_len {
-                    break;
-                }
-                current_piece_info_item = &current_piece_info[line_info_index];
-                // println!("current_piece_info: {:?} {:?} {:?} {:?}", line_info_index, current_piece_info_len, current_piece_info_item, current_piece_info_item["offset"]);
-                offset = current_piece_info_item["offset"].as_array().unwrap();
-                current_start = offset[0].as_u64().unwrap() as u64;
-            }
-
-            start += post_line_size;
-        
+            // queue.push_back(line_content.to_vec());
         }
-
-        println!("end {} {:?}", tag_file_path, starttime.elapsed());
+        println!("end {} {:?}", post_file_path, starttime.elapsed());
     }
     println!("done all {}", thread_id);
 }
 
-async fn map_reduce_search_tag(
+fn map_reduce_search_tag(
     tag: &Vec<String>,
     max_count: usize,
     start_id: Option<u64>,
     end_id: Option<u64>,
 ) -> Vec<Value> {
-    let files_queue = Arc::new(Mutex::new(VecDeque::new()));
+    let files_queue: Arc<Mutex<VecDeque<Vec<u8>>>> = Arc::new(Mutex::new(VecDeque::new()));
     let res_queue: Arc<Mutex<VecDeque<Vec<u8>>>> = Arc::new(Mutex::new(VecDeque::new()));
     let mut threads = Vec::new();
 
     let list_file_name = lib::LIST_FILE_NAME;
-    let list_file = File::open(list_file_name).await.unwrap();
-    let mut reader = BufReader::new(list_file);
+    let list_file = SyncFile::open(list_file_name).unwrap();
+    let mut reader = BufReader::new(&list_file);
 
-    
     while true {
-        let mut line: Vec<u8> = Vec::new();
-        line.clear();
-        reader.read_until(b'\n', &mut line).await.unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line);
+        
         if line.is_empty() {
             break;
         }
-        let file_info: Value = serde_json::from_slice(&line).unwrap();
+        let file_info: Value = serde_json::from_str(&line).unwrap();
         if let Some(start_id) = start_id {
             if file_info["end_id"].as_u64().unwrap() < start_id {
                 continue;
@@ -279,7 +217,7 @@ async fn map_reduce_search_tag(
             }
         }
         let mut queue = files_queue.lock().unwrap();
-        queue.push_back(line);
+        queue.push_back(line.as_bytes().to_vec());
 
         // cut file
         // break;
@@ -313,7 +251,7 @@ async fn map_reduce_search_tag(
         let res_queue = Arc::clone(&res_queue);
         let clone_updated_tags = updated_tags.clone();
 
-        let t = tokio::task::spawn(async move {
+        let t = thread::spawn(move || {
             let core_ids = core_affinity::get_core_ids().unwrap();
             let core_id = core_ids[i];
             let res = core_affinity::set_for_current(core_id);
@@ -322,14 +260,14 @@ async fn map_reduce_search_tag(
                 println!("set core failed: {}", i);
             }
 
-            search_file_with_tag(&*clone_updated_tags, files_queue, res_queue, i).await;
+            search_file_with_tag(&*clone_updated_tags, files_queue, res_queue, i);
         });
         threads.push(t);
     }
 
     println!("threads started");
     for t in threads {
-        match t.await {
+        match t.join() {
             Ok(_) => println!("thread done"),
             Err(e) => println!("thread error, {:?}", e),
         }
@@ -337,19 +275,20 @@ async fn map_reduce_search_tag(
     println!("threads done");
 
     let mut ret = Vec::new();
+    let mut queue = res_queue.lock().unwrap();
     while let Some(data) = {
-        let mut queue = res_queue.lock().unwrap();
         queue.pop_front()
     } {
         if data.is_empty() {
             continue;
         }
-
-        let json_data: Value = match serde_json::from_slice::<Value>(&data) {
+        let data_str = std::str::from_utf8(&data).unwrap().trim_ascii_end();
+        let json_data: Value = match serde_json::from_str(data_str) {
             Ok(v) => v,
             Err(e) => {
                 println!("json error: {}", e);
-                println!("error record: {:?}", data);
+                println!("error record: {:?}", std::str::from_utf8(&data).unwrap());
+
                 let mut map = serde_json::Map::new();
                 map.insert(
                     "id".to_string(),

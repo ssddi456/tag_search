@@ -1,9 +1,9 @@
 extern crate linereader;
 
-use std::io::{self, BufRead, BufReader};
-use serde_json::value;
-use tokio::io::{AsyncBufReadExt, BufReader as AsyncBufReader};
+use std::{fs::File, io::{self, BufRead, BufReader, Read}};
+use memmem::{Searcher, TwoWaySearcher};
 use linereader::LineReader;
+use serde_json::Value;
 
 pub const ALL_POSTS: &str = "./posts/posts.json";
 pub const LIST_FILE_NAME: &str = "./posts/files.json";
@@ -192,36 +192,38 @@ pub fn chunked_read_u8<R: io::Read>(
     })
 }
 
-pub async fn read_next_line<R: tokio::io::AsyncRead + std::marker::Unpin> (
-    r: &mut AsyncBufReader<R>,
-) -> Vec<u8> {
-    let mut line: Vec<u8> = Vec::new();
-    
-    r.read_until(b'\n', &mut line).await.unwrap();
-
-    line
+pub  fn search_with_searchers (
+    searchers: &Vec<TwoWaySearcher>,
+    tag_strings: &[u8],
+) -> bool {
+    for searcher in searchers {
+        if searcher.search_in(&tag_strings).is_none() {
+            return false;
+        }
+    }
+    true
 }
 
-pub async fn read_next_nth_lines<R: tokio::io::AsyncRead + std::marker::Unpin> (
-    r: &mut AsyncBufReader<R>,
-    n: usize,
-) -> Vec<Vec<u8>> {
-    let mut buf: Vec<Vec<u8>> = Vec::new();
-    let mut readlines = 0;
+pub fn read_json_file(file_name: &str) -> Value {
+    let mut tag_file = File::open(file_name).unwrap();
+    let mut content = String::new();
+    let tag_file_content: Value = {
+        tag_file.read_to_string(&mut content).unwrap();
+        std::str::from_utf8(&content.as_bytes()).unwrap();
+        serde_json::from_str(&content).unwrap()
+    };
+    tag_file_content
+}
 
-    while readlines < n {
-        let mut line = Vec::new();
-        
-        r.read_until(b'\n', &mut line).await.unwrap();
-
-        if line.is_empty() {
-            break;
-        }
-        readlines += 1;
-        buf.push(line);
+pub fn read_json_lines_file(file_name: &str) -> Vec<Value> {
+    let mut tag_file = File::open(file_name).unwrap();
+    let mut content = String::new();
+    let mut tag_file_content: Vec<Value> = Vec::new();
+    tag_file.read_to_string(&mut content).unwrap();
+    for line in content.lines() {
+        tag_file_content.push(serde_json::from_str(line).unwrap());
     }
-
-    buf
+    tag_file_content
 }
 
 #[cfg(test)]
