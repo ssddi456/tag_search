@@ -66,9 +66,16 @@ fn main() -> Result<(), std::io::Error> {
     let time_elapsed = now.elapsed();
     
     println!("found file: {:?}", foundfile.len());
-    // for file in foundfile.iter() {
-    //     println!("file: {}", file);
-    // }
+    if foundfile.len()  < 200 {
+        for file in foundfile.iter() {
+            let fileObj: &serde_json::Map<String, Value> = file.as_object().unwrap();
+            if fileObj.contains_key("large_file_url") {
+                println!("large_file_url: /posts/{} {}", fileObj["id"], fileObj["large_file_url"]);
+            } else {
+                println!("file: /posts/{} ", fileObj["id"]);
+            }
+        }
+    }
     println!("time: {:?}", time_elapsed);
 
     Ok(())

@@ -52,8 +52,8 @@ fn search_in_file(file_path: &str, keyword: Vec<&str>) -> bool {
 pub fn main() {
 
     let start = std::time::Instant::now();
-    let root: &str = "some_dir";
-    let keyword: Vec<&str> = vec!["some", "keyword"];
+    let root: &str = "F:/novals";
+    let keyword: Vec<&str> = vec!["槟榔"];
     
     search_in_dir(root, keyword);
 
